@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pay INR — Blockchain UPI</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.7.1/ethers.umd.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+    body { background: #0f0f13; color: #e8e8f0; min-height: 100vh; padding: 20px; }
+    h1 { text-align: center; font-size: 1.5rem; margin-bottom: 4px; }
+    .sub { text-align: center; color: #777; font-size: 0.85rem; margin-bottom: 20px; }
+    h2 { font-size: 0.95rem; font-weight: 700; margin-bottom: 12px; }
+    .card { background: #1a1a24; border: 1px solid #2a2a3a; border-radius: 8px; padding: 16px; margin: 0 auto 12px; max-width: 480px; }
+    label { font-size: 0.8rem; color: #777; display: block; margin-bottom: 4px; }
+    input { width: 100%; background: #0f0f13; border: 1px solid #2a2a3a; border-radius: 6px; color: #e8e8f0; padding: 8px 10px; font-size: 0.9rem; margin-bottom: 10px; outline: none; }
+    input:focus { border-color: #5046e5; }
+    .btn { width: 100%; background: #5046e5; color: #fff; border: none; border-radius: 6px; padding: 10px; font-size: 0.9rem; font-weight: 600; cursor: pointer; transition: opacity 0.2s; }
+    .btn:hover:not(:disabled) { opacity: 0.85; }
+    .btn:disabled { opacity: 0.38; cursor: not-allowed; }
+    .btn-sec { background: #252535; }
+    .tabs { display: flex; gap: 6px; max-width: 480px; margin: 0 auto 12px; }
+    .tab { flex: 1; padding: 10px; background: #1a1a24; border: 1px solid #2a2a3a; border-radius: 6px; cursor: pointer; text-align: center; font-size: 0.88rem; color: #777; }
+    .tab.active { background: #5046e5; border-color: #5046e5; color: #fff; }
+    .bal-wrap { text-align: center; padding: 8px 0 12px; }
+    .bal-num { font-size: 2rem; font-weight: 700; color: #7c6ffb; }
+    .bal-label { font-size: 0.75rem; color: #555; margin-top: 2px; }
+    .addr-pill { display: inline-block; background: #11111a; border: 1px solid #2a2a3a; border-radius: 16px; padding: 4px 12px; font-size: 0.7rem; color: #777; margin-top: 8px; word-break: break-all; }
+    .msg { padding: 8px 10px; border-radius: 6px; font-size: 0.85rem; margin-top: 8px; display: none; }
+    .msg.show { display: block; }
+    .ok { background: #0d2b12; color: #51cf66; }
+    .err { background: #2b0d0d; color: #ff6b6b; }
+    .inf { background: #0d1a2b; color: #74b9ff; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+<h1>⛓ Pay INR</h1>
+<p class="sub">Blockchain UPI — Sepolia Testnet · 1 ETH = ₹166,000</p>
+
+<!-- ═══════════════════════════════════════════════════════════
+     STEP 1 — Setup (contract address + connect wallet)
+════════════════════════════════════════════════════════════ -->
+<div class="card" id="setup-card">
+  <h2>Setup</h2>
+  <button class="btn" id="connect-btn" onclick="setup()">Connect MetaMask</button>
+  <div class="msg" id="setup-msg"></div>
+</div>
+
+<div id="app" class="hidden">
+  <div class="card">
+    <div class="bal-wrap">
+      <div class="bal-num" id="bal-num">₹0</div>
+      <div class="bal-label">INR Balance</div>
+      <div class="addr-pill" id="addr-pill">—</div>
+    </div>
+    <button class="btn btn-sec" onclick="refreshBalance()">Refresh Balance</button>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" onclick="showTab('send')">Send</div>
+    <div class="tab" onclick="showTab('receive')">Receive</div>
+  </div>
+
+  <div class="card" id="pane-send">
+    <h2>Send ETH</h2>
+    <label>Recipient Address</label>
+    <input id="send-to" placeholder="0x..." />
+    <label>Amount (INR)</label>
+    <input id="send-amount" type="number" min="100" step="100" placeholder="e.g. 1000" />
+    <button class="btn" onclick="send()">Send ETH</button>
+    <div class="msg" id="send-msg"></div>
+  </div>
+
+  <div class="card hidden" id="pane-receive">
+    <h2>Receive ETH</h2>
+    <p style="font-size:0.85rem; color:#777; margin-bottom:10px;">Share your address so others can send you ETH.</p>
+    <div class="addr-pill" id="receive-addr" style="display:block; text-align:center;">—</div>
+    <button class="btn btn-sec" style="margin-top:10px;" onclick="copyAddr()">Copy Address</button>
+    <div class="msg" id="copy-msg"></div>
+  </div>
+</div>
+
+<script>
+const SEPOLIA_ID = "0xaa36a7";
+
+const ETH_TO_INR = 166000;
+// Contract address
+const CONTRACT_ADDR = "0x5ED80006B36C54be3cd295b169e406593B9A5542";
+
+const CONTRACT_ABI = [
+  "function pay(address payable to) external payable",
+  "function getBalance(address user) external view returns (uint256)"
+];
+
+let provider, signer, contract, userAddress;
+
+async function setup() {
+  if (!window.ethereum) return alert("MetaMask not found. Install it from metamask.io");
+  msg("setup-msg", "inf", "Connecting to MetaMask…");
+  try {
+    const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+    userAddress = accounts[0];
+    const chainId = await window.ethereum.request({ method: "eth_chainId" });
+    if (chainId !== SEPOLIA_ID) {
+      msg("setup-msg", "inf", "Switching to Sepolia…");
+      await window.ethereum.request({
+        method: "wallet_switchEthereumChain",
+        params: [{ chainId: SEPOLIA_ID }]
+      });
+    }
+    provider = new ethers.BrowserProvider(window.ethereum);
+    signer = await provider.getSigner();
+    contract = new ethers.Contract(CONTRACT_ADDR, CONTRACT_ABI, signer);
+    document.getElementById("app").classList.remove("hidden");
+    document.getElementById("setup-card").style.opacity = "0.5";
+    document.getElementById("connect-btn").disabled = true;
+    document.getElementById("connect-btn").textContent = "Connected";
+    document.getElementById("addr-pill").textContent = userAddress;
+    document.getElementById("receive-addr").textContent = userAddress;
+    await refreshBalance();
+    msg("setup-msg", "ok", "Connected to Sepolia");
+    window.ethereum.on("accountsChanged", () => location.reload());
+    window.ethereum.on("chainChanged", () => location.reload());
+  } catch (e) {
+    msg("setup-msg", "err", e.message);
+  }
+}
+
+async function refreshBalance() {
+  if (!provider) return;
+  try {
+    const raw = await provider.getBalance(userAddress);
+    const ethAmount = parseFloat(ethers.formatEther(raw));
+    const inrAmount = Math.floor(ethAmount * ETH_TO_INR);
+    document.getElementById("bal-num").textContent = "₹" + inrAmount.toLocaleString('en-IN');
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+async function send() {
+  if (!contract) return alert("Connect first");
+  const to = document.getElementById("send-to").value.trim();
+  const inrAmountStr = document.getElementById("send-amount").value.trim();
+  if (!ethers.isAddress(to)) return msg("send-msg", "err", "Invalid recipient address");
+  if (!inrAmountStr || isNaN(inrAmountStr) || parseFloat(inrAmountStr) <= 0) return msg("send-msg", "err", "Enter a valid amount");
+  const inrAmount = parseFloat(inrAmountStr);
+  const ethAmount = inrAmount / ETH_TO_INR;
+  const amount = ethers.parseEther(ethAmount.toString());
+  msg("send-msg", "inf", "Waiting for MetaMask…");
+  try {
+    const tx = await contract.pay(to, { value: amount });
+    msg("send-msg", "inf", "Transaction sent, confirming…");
+    const receipt = await tx.wait();
+    msg("send-msg", "ok", `Sent ₹${Math.floor(inrAmount).toLocaleString('en-IN')} INR! <a href="https://sepolia.etherscan.io/tx/${receipt.hash}" target="_blank" style="color:#74b9ff;">Etherscan ↗</a>`);
+    document.getElementById("send-to").value = "";
+    document.getElementById("send-amount").value = "";
+    await refreshBalance();
+  } catch (e) {
+    msg("send-msg", "err", e.reason || e.shortMessage || e.message || "Transaction failed");
+  }
+}
+
+async function copyAddr() {
+  try {
+    await navigator.clipboard.writeText(userAddress);
+    msg("copy-msg", "ok", "Address copied!");
+  } catch {
+    msg("copy-msg", "err", "Could not copy");
+  }
+}
+
+function showTab(name) {
+  ["send","receive"].forEach(t => {
+    document.getElementById("pane-" + t).classList.toggle("hidden", t !== name);
+  });
+  document.querySelectorAll(".tab").forEach(tab => {
+    tab.classList.toggle("active", tab.textContent.trim().toLowerCase() === name);
+  });
+}
+
+function shortAddr(a) { return a.slice(0,6) + "…" + a.slice(-4); }
+
+function msg(id, type, html) {
+  const el = document.getElementById(id);
+  el.className = "msg show " + type;
+  el.innerHTML = html;
+}
+</script>
+</body>
+</html>
+</body>
+</html>
